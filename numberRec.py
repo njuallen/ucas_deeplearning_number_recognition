@@ -64,6 +64,7 @@ class CNNConfig():
     # 训练过程
     learning_rate = 0.001
     num_epochs = 100
+    batch_size = 256
     dropout_keep_prob = 0.5
     print_per_batch = 100       # 训练过程中,每100次batch迭代，打印训练信息
     save_tb_per_batch = 200
@@ -91,9 +92,7 @@ class ASRCNN(object):
                 print(pooled.shape)
                 pooled_outputs.append(pooled)
         num_filters_total = self.config.num_filters * len(self.config.filter_sizes)  # 64*4
-        print(pooled_outputs.shape)
         pooled_reshape = tf.reshape(tf.concat(pooled_outputs, 1), [-1, num_filters_total])
-        print(pooled_reshape.shape)
 
         fc = tf.layers.dense(pooled_reshape, self.config.hidden_dim, activation=tf.nn.relu, name='fc1')
         fc = tf.contrib.layers.dropout(fc, self.keep_prob)
@@ -141,14 +140,18 @@ def preprocess():
     return train_features, train_labels, \
             valid_features, valid_labels, test_features, test_labels
 
+def batch_iter(features, labels, batch_size):
+    '''
+    一个一个batch地生成训练数据
+    '''
+    assert len(features) == len(labels), \
+            "feature and label size do not match!"
+    for i in range(int(len(features) / batch_size)):
+        begin = i * batch_size
+        end = (i + 1) * batch_size
+        yield features[begin : end], labels[begin : end]
+
 def train(argv=None):
-    '''
-    batch = mfcc_batch_generator()
-    X, Y = next(batch)
-    trainX, trainY = X, Y
-    testX, testY = X, Y
-    # overfit for now
-    '''
     # 预处理数据集从数据集中提取特征太过费时
     # 因此我们将提取好的数据集特征存储在文件中
     train_features, train_labels, \
@@ -181,21 +184,30 @@ def train(argv=None):
     total_batch = 0
     for epoch in range(config.num_epochs):
         print('Epoch:', epoch + 1)
-        batch_train = batch_iter(train_features, train_labels)
+        batch_train = batch_iter(train_features, train_labels, config.batch_size)
         for x_batch, y_batch in batch_train:
+
             total_batch += 1
-            feed_dict = feed_data(cnn, x_batch, y_batch, config.dropout_keep_prob)
+
+            # 训练一个batch
+            feed_dict = {
+                    cnn.input_x: x_batch,
+                    cnn.input_y: y_batch,
+                    cnn.keep_prob: config.dropout_keep_prob
+                    }
             session.run(cnn.optim, feed_dict=feed_dict)
+
+            # 检查loss以及acc
             if total_batch % config.print_per_batch == 0:
-                train_loss, train_accuracy = session.run([cnn.loss, cnn.acc], feed_dict=feed_dict)
-                valid_loss, valid_accuracy = session.run([cnn.loss, cnn.acc], feed_dict={cnn.input_x: valid_features,
-                    cnn.input_y: valid_labels,
-                    cnn.keep_prob: config.dropout_keep_prob})
+                train_loss, train_accuracy = session.run(
+                        [cnn.loss, cnn.acc], feed_dict=feed_dict)
                 print('Steps:' + str(total_batch))
                 print('train_loss:' + str(train_loss) +
                         ' train accuracy:' + str(train_accuracy) +
                         '\tvalid_loss:' + str(valid_loss) +
                         ' valid accuracy:' + str(valid_accuracy))
+
+            # 存储相关统计信息到tensorboard
             if total_batch % config.save_tb_per_batch == 0:
                 train_s = session.run(merged_summary, feed_dict=feed_dict)
                 train_writer.add_summary(train_s, total_batch)
