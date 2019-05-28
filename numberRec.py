@@ -1,15 +1,54 @@
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
+
+import os
+import sys
+from random import shuffle
+import librosa
+import tensorflow as tf
+import tensorflow.keras as keras
+import numpy as np
+import pickle
+
+# 原始数据集
+dataset_dir = './recordings/'
+# 预处理的数据集
+dataset_pickle = "./dataset.pickle"
+
 def read_files(files):
     labels = []
     features = []
-    for ans, files in files.items():
-        for file in files:
-            wave, sr = librosa.load(file, mono=True)
-            label = dense_to_one_hot(ans, 10)
-            labels.append(label)
-            mfcc = librosa.feature.mfcc(wave, sr)
-            mfcc = np.pad(mfcc, ((0, 0), (0, 100 - len(mfcc[0]))), mode='constant', constant_values=0)
-            features.append(np.array(mfcc))
+    for file in files:
+        ans = int(file[0])
+        wave, sr = librosa.load(dataset_dir + file, mono=True)
+        label = keras.utils.to_categorical(ans, 10)
+        labels.append(label)
+        mfcc = librosa.feature.mfcc(wave, sr)
+        mfcc = np.pad(mfcc, ((0, 0), (0, 100 - len(mfcc[0]))), mode='constant', constant_values=0)
+        features.append(np.array(mfcc))
     return np.array(features), np.array(labels)
+
+# 读取数据集文件列表，并将其划分为训练集，验证集以及测试集
+def load_files():
+    files = os.listdir(dataset_dir)
+    wav_files = []
+    for wav in files:
+        if not wav.endswith(".wav"): continue
+        wav_files.append(wav)
+
+    if not wav_files:
+        print("未找到数据集")
+
+    # 重排数据集，保证训练，测试还有验证集中基本上各个类别的数据都有
+    shuffle(wav_files)
+
+    # 划分数据集
+    nfiles = len(wav_files)
+    ntrain = int(nfiles * 0.7)
+    nvalidation = int(nfiles * 0.2)
+    return wav_files[ : ntrain], wav_files[ntrain : ntrain + nvalidation], \
+            wav_files[ntrain + nvalidation : ]
+
 
 def mean_normalize(features):
     std_value = features.std()
@@ -24,7 +63,7 @@ class CNNConfig():
 
     # 训练过程
     learning_rate = 0.001
-    num_epochs =
+    num_epochs = 100
     dropout_keep_prob = 0.5
     print_per_batch = 100       # 训练过程中,每100次batch迭代，打印训练信息
     save_tb_per_batch = 200
@@ -71,79 +110,105 @@ class ASRCNN(object):
         correct_pred = tf.equal(tf.argmax(self.input_y, 1), self.y_pred_cls)
         self.acc = tf.reduce_mean(tf.cast(correct_pred, tf.float32))
 
-    def train(argv=None):
-        '''
-        batch = mfcc_batch_generator()
-        X, Y = next(batch)
-        trainX, trainY = X, Y
-        testX, testY = X, Y
-        # overfit for now
-        '''
+def preprocess():
+    if not os.path.isfile(dataset_pickle):
         train_files, valid_files, test_files = load_files()
+
         train_features, train_labels = read_files(train_files)
         train_features = mean_normalize(train_features)
         print('read train files down')
+
         valid_features, valid_labels = read_files(valid_files)
         valid_features = mean_normalize(valid_features)
         print('read valid files down')
+
         test_features, test_labels = read_files(test_files)
         test_features = mean_normalize(test_features)
         print('read test files down')
 
-        width = 20  # mfcc features
-        height = 100  # (max) length of utterance
-        classes = 10  # digits
+        print('预处理数据集写入%s' % dataset_pickle)
+        pickle_out = open(dataset_pickle,"wb")
+        pickle.dump((train_features, train_labels, valid_features, valid_labels,
+                test_features, test_labels), pickle_out)
+        pickle_out.close()
+    else:
+        print('从%s中加载预处理数据集' % dataset_pickle)
+        pickle_in = open(dataset_pickle,"rb")
+        (train_features, train_labels, valid_features, valid_labels,
+                test_features, test_labels) = pickle.load(pickle_in)
+        pickle_in.close()
 
-        config = CNNConfig
-        cnn = ASRCNN(config, width, height, classes)
-        session = tf.Session()
-        session.run(tf.global_variables_initializer())
-        saver = tf.train.Saver(tf.global_variables())
-        checkpoint_path = os.path.join('cnn_model', 'model.ckpt')
-        tensorboard_train_dir = 'tensorboard/train'
-        tensorboard_valid_dir = 'tensorboard/valid'
+    return train_features, train_labels, \
+            valid_features, valid_labels, test_features, test_labels
 
-        if not os.path.exists(tensorboard_train_dir):
-            os.makedirs(tensorboard_train_dir)
-        if not os.path.exists(tensorboard_valid_dir):
-            os.makedirs(tensorboard_valid_dir)
-        tf.summary.scalar("loss", cnn.loss)
-        tf.summary.scalar("accuracy", cnn.acc)
-        merged_summary = tf.summary.merge_all()
-        train_writer = tf.summary.FileWriter(tensorboard_train_dir)
-        valid_writer = tf.summary.FileWriter(tensorboard_valid_dir)
+def train(argv=None):
+    '''
+    batch = mfcc_batch_generator()
+    X, Y = next(batch)
+    trainX, trainY = X, Y
+    testX, testY = X, Y
+    # overfit for now
+    '''
+    # 预处理数据集从数据集中提取特征太过费时
+    # 因此我们将提取好的数据集特征存储在文件中
+    train_features, train_labels, \
+            valid_features, valid_labels, \
+            test_features, test_labels = preprocess()
 
-        total_batch = 0
-        for epoch in range(config.num_epochs):
-            print('Epoch:', epoch + 1)
-            batch_train = batch_iter(train_features, train_labels)
-            for x_batch, y_batch in batch_train:
-                total_batch += 1
-                feed_dict = feed_data(cnn, x_batch, y_batch, config.dropout_keep_prob)
-                session.run(cnn.optim, feed_dict=feed_dict)
-                if total_batch % config.print_per_batch == 0:
-                    train_loss, train_accuracy = session.run([cnn.loss, cnn.acc], feed_dict=feed_dict)
-                    valid_loss, valid_accuracy = session.run([cnn.loss, cnn.acc], feed_dict={cnn.input_x: valid_features,
-                        cnn.input_y: valid_labels,
-                        cnn.keep_prob: config.dropout_keep_prob})
-                    print('Steps:' + str(total_batch))
-                    print('train_loss:' + str(train_loss) +
-                            ' train accuracy:' + str(train_accuracy) +
-                            '\tvalid_loss:' + str(valid_loss) +
-                            ' valid accuracy:' + str(valid_accuracy))
-                if total_batch % config.save_tb_per_batch == 0:
-                    train_s = session.run(merged_summary, feed_dict=feed_dict)
-                    train_writer.add_summary(train_s, total_batch)
-                    valid_s = session.run(merged_summary, feed_dict={cnn.input_x: valid_features, cnn.input_y: valid_labels,
-                        cnn.keep_prob: config.dropout_keep_prob})
-                    valid_writer.add_summary(valid_s, total_batch)
+    width = 20  # mfcc features
+    height = 100  # (max) length of utterance
+    classes = 10  # digits
 
-            saver.save(session, checkpoint_path, global_step=epoch)
+    config = CNNConfig
+    cnn = ASRCNN(config, width, height, classes)
+    session = tf.Session()
+    session.run(tf.global_variables_initializer())
+    saver = tf.train.Saver(tf.global_variables())
+    checkpoint_path = os.path.join('cnn_model', 'model.ckpt')
+    tensorboard_train_dir = 'tensorboard/train'
+    tensorboard_valid_dir = 'tensorboard/valid'
 
-            test_loss, test_accuracy = session.run([cnn.loss, cnn.acc],
-                    feed_dict={cnn.input_x: test_features, cnn.input_y: test_labels,
-                         cnn.keep_prob: config.dropout_keep_prob})
-            print('test_loss:' + str(test_loss) + ' test accuracy:' + str(test_accuracy))
+    if not os.path.exists(tensorboard_train_dir):
+        os.makedirs(tensorboard_train_dir)
+    if not os.path.exists(tensorboard_valid_dir):
+        os.makedirs(tensorboard_valid_dir)
+    tf.summary.scalar("loss", cnn.loss)
+    tf.summary.scalar("accuracy", cnn.acc)
+    merged_summary = tf.summary.merge_all()
+    train_writer = tf.summary.FileWriter(tensorboard_train_dir)
+    valid_writer = tf.summary.FileWriter(tensorboard_valid_dir)
+
+    total_batch = 0
+    for epoch in range(config.num_epochs):
+        print('Epoch:', epoch + 1)
+        batch_train = batch_iter(train_features, train_labels)
+        for x_batch, y_batch in batch_train:
+            total_batch += 1
+            feed_dict = feed_data(cnn, x_batch, y_batch, config.dropout_keep_prob)
+            session.run(cnn.optim, feed_dict=feed_dict)
+            if total_batch % config.print_per_batch == 0:
+                train_loss, train_accuracy = session.run([cnn.loss, cnn.acc], feed_dict=feed_dict)
+                valid_loss, valid_accuracy = session.run([cnn.loss, cnn.acc], feed_dict={cnn.input_x: valid_features,
+                    cnn.input_y: valid_labels,
+                    cnn.keep_prob: config.dropout_keep_prob})
+                print('Steps:' + str(total_batch))
+                print('train_loss:' + str(train_loss) +
+                        ' train accuracy:' + str(train_accuracy) +
+                        '\tvalid_loss:' + str(valid_loss) +
+                        ' valid accuracy:' + str(valid_accuracy))
+            if total_batch % config.save_tb_per_batch == 0:
+                train_s = session.run(merged_summary, feed_dict=feed_dict)
+                train_writer.add_summary(train_s, total_batch)
+                valid_s = session.run(merged_summary, feed_dict={cnn.input_x: valid_features, cnn.input_y: valid_labels,
+                    cnn.keep_prob: config.dropout_keep_prob})
+                valid_writer.add_summary(valid_s, total_batch)
+
+        saver.save(session, checkpoint_path, global_step=epoch)
+
+        test_loss, test_accuracy = session.run([cnn.loss, cnn.acc],
+                feed_dict={cnn.input_x: test_features, cnn.input_y: test_labels,
+                     cnn.keep_prob: config.dropout_keep_prob})
+        print('test_loss:' + str(test_loss) + ' test accuracy:' + str(test_accuracy))
 
 # 测试数据准备,读取文件并提取音频特征
 def read_test_wave(path):
