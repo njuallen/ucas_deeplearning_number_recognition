@@ -190,17 +190,28 @@ def train(argv=None):
             total_batch += 1
 
             # 训练一个batch
-            feed_dict = {
+            train_feed_dict = {
                     cnn.input_x: x_batch,
                     cnn.input_y: y_batch,
                     cnn.keep_prob: config.dropout_keep_prob
                     }
-            session.run(cnn.optim, feed_dict=feed_dict)
+
+            session.run(cnn.optim, feed_dict=train_feed_dict)
 
             # 检查loss以及acc
             if total_batch % config.print_per_batch == 0:
+                # 检查训练的batch的loss以及acc
                 train_loss, train_accuracy = session.run(
-                        [cnn.loss, cnn.acc], feed_dict=feed_dict)
+                        [cnn.loss, cnn.acc], feed_dict=train_feed_dict)
+
+                # 检查验证集的batch的loss以及acc
+                valid_feed_dict = {
+                        cnn.input_x: valid_features,
+                        cnn.input_y: valid_labels,
+                        cnn.keep_prob: config.dropout_keep_prob
+                        }
+                valid_loss, valid_accuracy = session.run(
+                        [cnn.loss, cnn.acc], feed_dict=valid_feed_dict)
                 print('Steps:' + str(total_batch))
                 print('train_loss:' + str(train_loss) +
                         ' train accuracy:' + str(train_accuracy) +
@@ -209,17 +220,20 @@ def train(argv=None):
 
             # 存储相关统计信息到tensorboard
             if total_batch % config.save_tb_per_batch == 0:
-                train_s = session.run(merged_summary, feed_dict=feed_dict)
+                train_s = session.run(merged_summary, feed_dict=train_feed_dict)
                 train_writer.add_summary(train_s, total_batch)
-                valid_s = session.run(merged_summary, feed_dict={cnn.input_x: valid_features, cnn.input_y: valid_labels,
-                    cnn.keep_prob: config.dropout_keep_prob})
+                valid_s = session.run(merged_summary, feed_dict=valid_feed_dict)
                 valid_writer.add_summary(valid_s, total_batch)
 
         saver.save(session, checkpoint_path, global_step=epoch)
 
+        test_feed_dict = {
+                cnn.input_x: test_features,
+                cnn.input_y: test_labels,
+                cnn.keep_prob: config.dropout_keep_prob
+                }
         test_loss, test_accuracy = session.run([cnn.loss, cnn.acc],
-                feed_dict={cnn.input_x: test_features, cnn.input_y: test_labels,
-                     cnn.keep_prob: config.dropout_keep_prob})
+                feed_dict=test_feed_dict)
         print('test_loss:' + str(test_loss) + ' test accuracy:' + str(test_accuracy))
 
 # 测试数据准备,读取文件并提取音频特征
